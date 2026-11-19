@@ -36,11 +36,12 @@ def forecast(case):
     history = case["history"]
     snapshots = []
     for read in history:
-        if snapshots and read["players_tracked"] == snapshots[-1]["players_tracked"] and read["rates"] == snapshots[-1]["rates"]:
-            continue
         read = dict(read)
         read["hours"] = max(0.0, (stamp(read["at"]) - release).total_seconds() / 3600.0)
-        snapshots.append(read)
+        if snapshots and read["players_tracked"] == snapshots[-1]["players_tracked"] and read["rates"] == snapshots[-1]["rates"]:
+            snapshots[-1] = read
+        else:
+            snapshots.append(read)
 
     px = [math.log1p(s["hours"]) for s in snapshots]
     players = [float(s["players_tracked"]) for s in snapshots]
@@ -50,7 +51,7 @@ def forecast(case):
     else:
         last_h = snapshots[-1]["hours"]
         slope = 4.0 if last_h < 12 else (1.0 if last_h < 48 else 0.5)
-        intercept = math.log(players[-1])
+        intercept = math.log(players[-1]) - slope * math.log1p(last_h)
         flat_players = True
     last_players = players[-1]
     pred_players = math.exp(intercept + slope * math.log1p(target_h))
@@ -98,12 +99,15 @@ def forecast(case):
         e_target = min(pred_players, max(0.0, e_target))
         last_rate = snapshots[-1]["rates"][i]
         if last_rate == 100:
-            rowq = [100.0] * 5
+            rowq = [98.0, 99.5, 100.0, 100.0, 100.0]
         else:
             median = min(99.99, max(0.01, 100.0 * e_target / pred_players))
             s_rw = 0.5 * math.sqrt(horizon_days)
             s_prior = 0.5 if flat_players or fallback else 0.3
-            spread = min(2.5, max(0.4, math.sqrt(s_rw * s_rw + fit_sd * fit_sd + s_prior * s_prior)))
+            spread = min(2.0, max(0.8, math.sqrt(s_rw * s_rw + fit_sd * fit_sd + s_prior * s_prior)))
+            last_earners = float(last_rate) * snapshots[-1]["players_tracked"] / 100.0 if last_rate is not None else 0.0
+            if last_earners < 10:
+                spread = max(1.2, spread)
             z = (-1.645, -0.674, 0.0, 0.674, 1.645)
             ml = safe_logit(median / 100.0)
             rowq = [round4(100.0 / (1.0 + math.exp(max(-700.0, min(700.0, -(ml + v * spread)))))) for v in z]
